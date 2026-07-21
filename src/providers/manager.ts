@@ -1,4 +1,4 @@
-import { SETTINGS } from "../core/config/settings";
+import { SETTINGS } from "../config/settings";
 import type { AIProvider } from "./provider";
 import { OpenRouterProvider } from "./openRouter";
 import { OmniRouteProvider } from "./omniRoute";
