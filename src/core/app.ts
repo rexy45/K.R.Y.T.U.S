@@ -2,6 +2,8 @@ import { LOOP } from "./loop";
 import { AtlasEngine } from "./atlas";
 import { Evaluator } from "./evaluator";
 import { TokenCutter } from "./tokenCutter";
+import { handleCommand } from "../commands/commands";
+import { handleMemoryCommand } from "../commands/memory";
 
 import { ProviderManager } from "../providers/manager";
 import { MemoryManager } from "../memory/memoryManager";
@@ -18,54 +20,19 @@ import { handleExit } from "../commands/exit";
 import { SETTINGS } from "../config/settings";
 
 const atlas = new AtlasEngine();
-const provider = new ProviderManager();
 const memory = new MemoryManager();
+
+let provider: ProviderManager;
 
 const evaluator = new Evaluator();
 const tokenCutter = new TokenCutter();
 
-function handleMemoryCommand(command: string, memory: MemoryManager) {
 
-    const lower = command.toLowerCase();
-    if (lower.startsWith("remember this:")) {
-
-        const text = command.substring(14).trim();
-
-        memory.saveMemory(text, 10);
-
-        console.log("\n✓ Memory stored.\n");
-
-        return true;
-    }
-
-    if (lower.startsWith("recall")) {
-
-        const keyword = command.replace(/recall/i, "").trim();
-
-        const results = memory.searchMemory(keyword);
-
-        if (results.length === 0) {
-
-            console.log("\nNo memories found.\n");
-
-        } else {
-
-            console.log("\nMemory found:\n");
-
-            results.forEach((item: any) => {
-                console.log(`- ${item.memory}`);
-            });
-
-            console.log("");
-        }
-
-        return true;
-    }
-
-    return false;
-}
 
 export async function startCLI() {
+
+    // Create provider only after CLI starts
+    provider = new ProviderManager();
 
     const identity = memory.loadCore();
 
@@ -99,16 +66,30 @@ export async function startCLI() {
 
         //----------------------------------------
 
+        // ----------------------------------------
+        // SYSTEM COMMANDS
+        // ----------------------------------------
+
+        if (handleCommand(command))
+            continue;
+
+        // ----------------------------------------
+        // EXIT
+        // ----------------------------------------
+
         if (handleExit(command))
             continue;
 
-        if (handleMemoryCommand(command, memory))
-            continue;
+        // ----------------------------------------
+        // MEMORY COMMANDS (old remember/recall)
+        // ----------------------------------------
 
-      let currentPrompt = command;
-      let previousScore = -1;
+        if (handleMemoryCommand(command))
+          continue;
 
-      let noImprovement = 0;
+        let currentPrompt = command;
+        let previousScore = -1;
+        let noImprovement = 0;
 
         do {
 
@@ -152,12 +133,12 @@ Identity:
                     currentPrompt
                 );
 
-
                 const reply = await provider.ask(
                     prompt,
                     decision.model,
                     decision.agent
                 );
+
                 showReply("K.R.Y.T.U.S", reply);
 
                 memory.saveMemory(
@@ -165,43 +146,45 @@ Identity:
                     3
                 );
 
-                //----------------------------------------
-                // LOOP STOP
-                //----------------------------------------
-
                 const evaluation = evaluator.evaluate(reply);
 
                 if (SETTINGS.debug) {
+
                     console.log(
                         `[Loop] Score: ${evaluation.score} | ${evaluation.reason}`
                     );
+
                 }
 
-                // High enough quality -> stop
                 if (evaluation.score >= LOOP.targetScore) {
+
                     console.log("\n✓ Target quality reached.\n");
+
                     break;
                 }
 
-                // Didn't improve?
                 if (previousScore >= evaluation.score) {
+
                     noImprovement++;
+
                 } else {
+
                     noImprovement = 0;
+
                 }
 
                 previousScore = evaluation.score;
 
-                // Stuck -> stop
                 if (noImprovement >= LOOP.maxNoImprovement) {
+
                     console.log("\n✓ Loop stopped (no more improvements).\n");
+
                     break;
                 }
 
-                // User disabled loop
-                if (!LOOP.enabled) {
+                if (!LOOP.enabled)
                     break;
-                }
+
                 currentPrompt = `
 Review ONLY your previous answer.
 
