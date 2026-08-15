@@ -1,15 +1,13 @@
-const sleep = (ms: number) =>
-  new Promise(resolve => setTimeout(resolve, ms));
-
-const RED = "\x1b[38;2;220;20;60m";
-const WHITE = "\x1b[97m";
-const GREEN = "\x1b[92m";
-const GRAY = "\x1b[90m";
+// ANSI Color Codes
 const RESET = "\x1b[0m";
+const RED = "\x1b[31m";
+const GREEN = "\x1b[32m";
+const WHITE = "\x1b[37m";
+const GRAY = "\x1b[90m";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function showBanner() {
-  console.clear();
-
   console.log(
 `${RED}══════════════════════════════════════════════════════════════════════════════════════════════════
 

@@ -1,21 +1,17 @@
 import { SETTINGS } from "../config/settings";
 import type { AIProvider } from "./provider";
-
-import { OpenRouterProvider } from "./openRouter";
-import { OmniRouteProvider } from "./omniRoute";
+import { OpenAICompatibleProvider } from "./openAICompatible";
 
 export class ProviderManager {
   private provider: AIProvider;
 
   constructor() {
-    switch (SETTINGS.provider) {
-      case "omniroute":
-        this.provider = new OmniRouteProvider();
-        break;
+    console.log("Provider:", SETTINGS.provider);
 
-      case "openrouter":
+    switch (SETTINGS.provider) {
+      case "openai":
       default:
-        this.provider = new OpenRouterProvider();
+        this.provider = new OpenAICompatibleProvider();
         break;
     }
   }

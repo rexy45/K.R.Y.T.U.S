@@ -1,0 +1,305 @@
+import { spawn } from "child_process";
+import fs from "fs";
+
+const PIPER =
+    "D:\\krytus\\AI\\piper\\piper.exe";
+
+const MODEL =
+    "D:\\krytus\\AI\\piper\\en_US-ryan-high.onnx";
+
+const OUTPUT =
+    "D:\\krytus\\AI\\temp\\voice.wav";
+
+// Directory Piper writes one .wav file into per input line, when we run
+// it in "batch" mode (one process, many lines of stdin). This is what
+// lets us load the model ONCE instead of once-per-chunk.
+const OUTPUT_DIR =
+    "D:\\krytus\\AI\\temp\\voice_chunks";
+
+// ---------------------------------------------------------------------
+// Performance tuning
+// ---------------------------------------------------------------------
+// Intra-op thread count passed to the Piper executable (ONNX Runtime).
+// On an 8GB RAM / CPU-only box, 4 is usually the sweet spot: enough
+// parallelism to cut latency without thrashing memory bandwidth.
+// Adjust to match your physical core count.
+const NUM_THREADS = 4;
+
+// Max characters per chunk before we split on sentence boundaries.
+// Smaller chunks = lower peak memory + faster time-to-first-audio,
+// at the cost of slightly more process/file overhead per chunk.
+const MAX_CHUNK_CHARS = 220;
+
+// ---------------------------------------------------------------------
+// Custom vocabulary / pronunciation overrides
+// ---------------------------------------------------------------------
+// Easily editable lookup table. Keys are matched as whole words,
+// case-insensitively, and swapped for the phonetic spelling on the right
+// before the string ever reaches Piper/espeak.
+const CUSTOM_VOCAB: Record<string, string> = {
+    "AI": "ay eye",
+    "CLI": "see ell eye",
+    "API": "ay pee eye",
+    "GPU": "gee pee you",
+    "CPU": "see pee you",
+    "Nvidia": "In-vid-ee-uh",
+    "ONNX": "on-icks",
+    "JSON": "jay-son",
+    "SQL": "sequel",
+    "URL": "you are ell",
+};
+
+// Pre-build a single regex for all vocab keys so we do one pass instead
+// of iterating + re-scanning the string per entry.
+const VOCAB_REGEX = new RegExp(
+    `\\b(${Object.keys(CUSTOM_VOCAB)
+        .map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("|")})\\b`,
+    "gi"
+);
+
+// Matches markdown emphasis/heading characters we want to strip but
+// whose *inner* content should survive: *bold*, _italic_, #heading.
+const MARKDOWN_CHARS_REGEX = /[*_#`~]/g;
+
+// Matches standalone special symbols that Piper would otherwise try to
+// speak aloud (@, %, ^, &, etc.). Word characters, whitespace and basic
+// sentence punctuation are preserved.
+const STRAY_SYMBOLS_REGEX = /[^\w\s.,!?;:'"()\-]/g;
+
+// Collapse repeated whitespace left behind after stripping.
+const WHITESPACE_REGEX = /\s+/g;
+
+// Naive sentence-boundary splitter: splits after ., !, or ? that is
+// followed by whitespace (or end of string).
+const SENTENCE_SPLIT_REGEX = /(?<=[.!?])\s+/;
+
+/**
+ * Sanitizes and normalizes raw text before it's handed to the TTS engine:
+ *  1. Strips markdown formatting characters (keeping inner words).
+ *  2. Removes stray special symbols.
+ *  3. Applies custom pronunciation vocabulary.
+ *  4. Collapses whitespace.
+ *
+ * Designed to run in a single pass per regex (no per-character loops)
+ * to keep overhead low on constrained hardware.
+ */
+function sanitizeText(input: string): string {
+    let text = input;
+
+    text = text.replace(MARKDOWN_CHARS_REGEX, "");
+    text = text.replace(STRAY_SYMBOLS_REGEX, "");
+    text = text.replace(VOCAB_REGEX, (match) => CUSTOM_VOCAB[match.toUpperCase()] ?? CUSTOM_VOCAB[match] ?? match);
+    text = text.replace(WHITESPACE_REGEX, " ").trim();
+
+    return text;
+}
+
+/**
+ * Splits sanitized text into sentence-level chunks capped at
+ * MAX_CHUNK_CHARS, merging short sentences together where possible so we
+ * don't spawn more Piper processes than necessary.
+ */
+function chunkText(input: string): string[] {
+    const sentences = input.split(SENTENCE_SPLIT_REGEX).filter(Boolean);
+
+    const chunks: string[] = [];
+    let current = "";
+
+    for (const sentence of sentences) {
+        const candidate = current ? `${current} ${sentence}` : sentence;
+
+        if (candidate.length > MAX_CHUNK_CHARS && current) {
+            chunks.push(current);
+            current = sentence;
+        } else {
+            current = candidate;
+        }
+    }
+
+    if (current) chunks.push(current);
+
+    return chunks.length > 0 ? chunks : [input];
+}
+
+/**
+ * Runs ALL sanitized chunks through a single Piper process. Piper loads
+ * the model once, then reads one line of text per chunk from stdin and
+ * writes one WAV file per line into OUTPUT_DIR (via --output_dir).
+ *
+ * This is the fix for the "reloads on every chunk" problem: previously
+ * we spawned a fresh `piper.exe` per chunk, so the ~0.7-2.5s model load
+ * you saw in the logs happened before every single sentence, creating
+ * dead-air gaps that sounded like random stopping. Loading once and
+ * streaming all lines through the same process removes that overhead
+ * entirely.
+ *
+ * Returns the wav file paths in generation order.
+ */
+let currentPiperProcess: ReturnType<typeof spawn> | null = null;
+let isSpeaking = false;
+let stopRequested = false;
+
+// Call this once at startup to wipe any stale .wav files left from previous runs
+export function cleanupVoiceTemp() {
+    try {
+        if (fs.existsSync(OUTPUT_DIR)) {
+            for (const f of fs.readdirSync(OUTPUT_DIR)) {
+                try { fs.unlinkSync(`${OUTPUT_DIR}\\${f}`); } catch {}
+            }
+        } else {
+            fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+        }
+    } catch {}
+}
+
+export function stopSpeaking() {
+    stopRequested = true;
+    if (currentPiperProcess) {
+        currentPiperProcess.kill();
+        currentPiperProcess = null;
+    }
+}
+
+/**
+ * Spawns a single Piper process and streams chunks to it. It returns an async generator
+ * that yields .wav file paths as soon as they are created on disk by Piper.
+ */
+async function* synthesizeStream(chunks: string[]): AsyncGenerator<string> {
+    if (fs.existsSync(OUTPUT_DIR)) {
+        for (const f of fs.readdirSync(OUTPUT_DIR)) fs.unlinkSync(`${OUTPUT_DIR}\\${f}`);
+    } else {
+        fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    }
+
+    const piper = spawn(
+        PIPER,
+        [
+            "--model",
+            MODEL,
+            "--output_dir",
+            OUTPUT_DIR,
+            "--num_threads",
+            String(NUM_THREADS)
+        ]
+    );
+    currentPiperProcess = piper;
+
+    piper.stdin.on("error", (err) => console.error("[PIPER] stdin error:", err.message));
+    piper.stderr.on("data", (d) => {
+        const msg = d.toString().trim();
+        if (msg) console.log("[PIPER]", msg);
+    });
+
+    // Write all chunks to Piper's stdin.
+    piper.stdin.write(chunks.join("\n") + "\n");
+    piper.stdin.end();
+
+    // Give Piper a small head start before we start polling for output files
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    const expectedFiles = chunks.length;
+    const generatedFiles = new Set<string>();
+
+    let piperExited = false;
+    piper.on("close", () => { piperExited = true; currentPiperProcess = null; });
+    piper.on("error", () => { piperExited = true; currentPiperProcess = null; });
+
+    while (!stopRequested) {
+        const files = fs.readdirSync(OUTPUT_DIR).filter(f => f.endsWith('.wav'));
+
+        for (const file of files) {
+            const fullPath = `${OUTPUT_DIR}\\${file}`;
+            if (!generatedFiles.has(fullPath)) {
+                try {
+                    const fd = fs.openSync(fullPath, 'r+');
+                    fs.closeSync(fd);
+                    generatedFiles.add(fullPath);
+                    yield fullPath;
+                } catch {
+                    // File still being written by Piper
+                }
+            }
+        }
+
+        // All expected files have been yielded
+        if (generatedFiles.size >= expectedFiles) break;
+
+        // Piper has exited — do one final scan then stop
+        if (piperExited) {
+            const finalFiles = fs.readdirSync(OUTPUT_DIR).filter(f => f.endsWith('.wav'));
+            for (const file of finalFiles) {
+                const fullPath = `${OUTPUT_DIR}\\${file}`;
+                if (!generatedFiles.has(fullPath)) {
+                    try {
+                        const fd = fs.openSync(fullPath, 'r+');
+                        fs.closeSync(fd);
+                        generatedFiles.add(fullPath);
+                        yield fullPath;
+                    } catch {}
+                }
+            }
+            break;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+}
+
+/**
+ * Plays a single WAV file via PowerShell and deletes it
+ * afterward to keep OUTPUT_DIR from accumulating files across calls.
+ */
+function playFile(filePath: string): Promise<void> {
+    return new Promise((resolve) => {
+        const player = spawn(
+            "powershell",
+            [
+                "-c",
+                `(New-Object Media.SoundPlayer '${filePath}').PlaySync();`
+            ]
+        );
+
+        const done = () => {
+            try {
+                if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+            } catch {
+                // ignore cleanup failures
+            }
+            resolve();
+        };
+
+        player.on("error", (err) => {
+            console.log("[PLAYER] error:", err.message);
+            done();
+        });
+
+        player.on("close", done);
+    });
+}
+
+export async function speak(text: string): Promise<void> {
+    if (isSpeaking) {
+        stopSpeaking();
+    }
+    
+    stopRequested = false;
+    isSpeaking = true;
+
+    const sanitized = sanitizeText(text);
+    const chunks = chunkText(sanitized).filter((c) => c.trim().length > 0);
+
+    if (chunks.length === 0) {
+        isSpeaking = false;
+        return;
+    }
+
+    try {
+        for await (const wavFile of synthesizeStream(chunks)) {
+            if (stopRequested) break;
+            await playFile(wavFile);
+        }
+    } finally {
+        isSpeaking = false;
+    }
+}

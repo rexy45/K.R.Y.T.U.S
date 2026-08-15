@@ -1,0 +1,6 @@
+{
+  "provider": "openai",
+  "baseUrl": "",
+  "apiKey": "",
+  "defaultModel": ""
+}

@@ -1,4 +1,4 @@
-import { KYROSYS } from "../autonomous/kyrosys";
+import { KYRÖSYS } from "../autonomous/kyrosys";
 import { speak } from "../voice/piper";
 import { voiceManager } from "../voice/VoiceManager";
 import { LOOP } from "./loop";

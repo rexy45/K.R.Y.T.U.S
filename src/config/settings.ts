@@ -1,14 +1,13 @@
-export type ProviderType = "openrouter" | "omniroute";
+export type ProviderType =
+  | "openai"
+  | "local";
 
-export const SETTINGS: {
-  debug: boolean;
-  banner: boolean;
-  thinking: boolean;
-  provider: ProviderType;
-} = {
+export const SETTINGS = {
   debug: true,
+
   banner: true,
+
   thinking: true,
 
-  provider: "openrouter",
+  provider: "openai" as ProviderType,
 };

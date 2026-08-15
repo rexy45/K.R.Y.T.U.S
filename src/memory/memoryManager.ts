@@ -4,7 +4,6 @@ const CORE_PATH = "./src/memory/core.json";
 const LONGTERM_PATH = "./src/memory/longterm.json";
 const SESSION_PATH = "./src/memory/session.json";
 
-
 export class MemoryManager {
 
   loadCore() {
@@ -12,7 +11,6 @@ export class MemoryManager {
       fs.readFileSync(CORE_PATH, "utf-8")
     );
   }
-
 
   loadLongTerm() {
     if (!fs.existsSync(LONGTERM_PATH)) {
@@ -24,7 +22,6 @@ export class MemoryManager {
     );
   }
 
-
   saveMemory(memory: string, importance: number = 5) {
 
     const memories = this.loadLongTerm();
@@ -35,13 +32,11 @@ export class MemoryManager {
       importance
     });
 
-
     fs.writeFileSync(
       LONGTERM_PATH,
       JSON.stringify(memories, null, 2)
     );
   }
-
 
   searchMemory(keyword: string) {
 
@@ -54,7 +49,6 @@ export class MemoryManager {
     );
   }
 
-
   loadSession() {
 
     return JSON.parse(
@@ -62,4 +56,28 @@ export class MemoryManager {
     );
 
   }
+
+  // ==============================
+  // List every memory
+  // ==============================
+
+  listMemories() {
+
+    return this.loadLongTerm();
+
+  }
+
+  // ==============================
+  // Clear every memory
+  // ==============================
+
+  clearMemory() {
+
+    fs.writeFileSync(
+      LONGTERM_PATH,
+      JSON.stringify([], null, 2)
+    );
+
+  }
+
 }

@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import "dotenv/config";
+
 
 import type { AIProvider } from "./provider";
 import { SessionManager } from "../memory/sessionManager";
@@ -9,10 +9,24 @@ import { NODE_PROMPT } from "../agents/node";
 export class OmniRouteProvider implements AIProvider {
   private session = new SessionManager();
 
-  private client = new OpenAI({
-    apiKey: process.env.OMNIROUTE_API_KEY,
-    baseURL: "http://localhost:20128/v1",
-  });
+  private client: OpenAI;
+
+  constructor() {
+
+    const apiKey = process.env.OMNIROUTE_API_KEY;
+
+    if (!apiKey) {
+      throw new Error(
+        "OMNIROUTE_API_KEY not found in .env"
+      );
+    }
+
+    this.client = new OpenAI({
+      apiKey,
+      baseURL: "http://localhost:20128/v1",
+    });
+
+  }
 
   private getSystemPrompt(agent?: string): string {
     switch (agent) {
